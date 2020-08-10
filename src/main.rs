@@ -13,7 +13,7 @@ fn main() -> Result<()> {
     let lng = 139.152164;
     let zoom = 16;
 
-    let (tile_x, tile_y, pixel_x, pixel_y) = calc_tile_and_pixel(lat, lng, zoom);
+    let (tile_x, tile_y, pixel_x, pixel_y, _) = calc_tile_and_pixel(lat, lng, zoom);
 
     println!(
         "https://tile.openstreetmap.org/{}/{}/{}.png",
@@ -30,7 +30,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32) {
+fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32, u32) {
     let t = GlobalMercator::default();
     let tile_size = t.tile_size() as f64;
 
@@ -45,7 +45,7 @@ fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32) {
     let pixel_x = ((lng - b) * tile_size / (d - b)).floor() as i32;
 
     // 結果をタプルにして返します
-    (tile_x, tile_y, pixel_x, pixel_y)
+    (tile_x, tile_y, pixel_x, pixel_y, t.tile_size())
 }
 
 fn gps_test() -> Result<()> {
