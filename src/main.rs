@@ -5,10 +5,15 @@ use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timel
 use globalmaptiles::GlobalMercator;
 use gpx;
 use gpx::Track;
+use std::fs;
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, BufWriter, Write};
 
-fn main() -> Result<()> {
+const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
+const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
+
+#[tokio::main]
+async fn main() -> Result<()> {
     let lat = 35.6157235;
     let lng = 139.152164;
     let zoom = 16;
@@ -25,6 +30,23 @@ fn main() -> Result<()> {
     );
 
     println!("pos: {}-{}", pixel_x, pixel_y);
+
+    // ディレクトリ作成
+    fs::create_dir_all("tiles")?;
+
+    let xxx = format!(
+        "https://cyberjapandata.gsi.go.jp/xyz/std/{}/{}/{}.png",
+        zoom, tile_x, tile_y
+    );
+
+    let client = reqwest::Client::new();
+    let r = client.get(&xxx).send().await?;
+
+    let f = File::create("tiles/test.png")?;
+    let mut fw = BufWriter::new(f);
+
+    let ppp = r.bytes().await?;
+    fw.write_all(&ppp)?;
 
     //gps_test()?;
     Ok(())

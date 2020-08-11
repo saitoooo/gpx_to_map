@@ -7,7 +7,9 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+tokio = { version = "0.2", features = ["full"] }
 gpx = "0.8.1"
 anyhow = "1.0.32"
 chrono = { version = "0.4", features = ["serde"] }
 globalmaptiles-rs = "0.1.6"
+reqwest = "0.10.7"
