@@ -1,5 +1,6 @@
 // https://qiita.com/MALORGIS/items/1a9114dd090e5b891bf7
 // https://icon-rainbow.com/
+// https://qiita.com/tasshi/items/de36d9add14f24317f47
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
@@ -50,9 +51,8 @@ async fn main() -> Result<()> {
             .to_str()
             .ok_or(anyhow::anyhow!("出力ファイル名生成に失敗"))?;
 
-        make_map_image(
+        let image = make_map_image(
             &tile_dir,
-            dest_path,
             zoom,
             tile_x,
             tile_y,
@@ -62,6 +62,8 @@ async fn main() -> Result<()> {
             map_image_size,
         )
         .await?;
+
+        image.save_with_format(dest_path, image::ImageFormat::Png)?;
     }
 
     Ok(())
@@ -69,7 +71,6 @@ async fn main() -> Result<()> {
 
 async fn make_map_image(
     tile_dir: &str,
-    dest_path: &str,
     zoom: u32,
     tile_x: i32,
     tile_y: i32,
@@ -77,7 +78,7 @@ async fn make_map_image(
     pixel_y: i32,
     tile_size: u32,
     map_image_size: u32,
-) -> Result<()> {
+) -> Result<DynamicImage> {
     // 必要なタイル数を計算
     let tile_calc = (map_image_size - 1) / tile_size + 1;
 
@@ -145,10 +146,8 @@ async fn make_map_image(
         map_image_size / 2 - map_image_size / 40,
     );
 
-    // save
-    img.save_with_format(dest_path, image::ImageFormat::Png)?;
-
-    Ok(())
+    let img = DynamicImage::ImageRgba8(img);
+    Ok(img)
 }
 
 async fn store_map_tile_range(
