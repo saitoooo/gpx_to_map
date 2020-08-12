@@ -3,20 +3,19 @@
 // https://qiita.com/tasshi/items/de36d9add14f24317f47
 
 use anyhow::Result;
-use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Duration, Timelike, Utc};
 use globalmaptiles::GlobalMercator;
-use gpx;
 use gpx::Track;
-use image::DynamicImage;
-use std::fs;
-use std::fs::File;
-use std::io::{BufReader, BufWriter, Write};
-use std::process::{Child, Command, Stdio};
+use image::{imageops, DynamicImage};
 use std::{
+    fs,
+    fs::File,
+    io::{BufReader, BufWriter, Write},
     ops::Range,
     path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    thread, time,
 };
-use std::{thread, time};
 
 const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
 const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
@@ -72,7 +71,6 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        // image.save_with_format(dest_path, image::ImageFormat::Png)?;
         let r = image.as_rgba8().unwrap();
         let r = r.clone().into_raw();
         stdin.write_all(&r).unwrap();
@@ -147,7 +145,7 @@ async fn make_map_image(
         for (y_pos, tile_y) in y_range.clone().enumerate() {
             let tile_image = image::open(make_tile_filename(tile_dir, zoom, tile_x, tile_y))?;
             let tile_image = tile_image.to_rgba();
-            image::imageops::overlay(
+            imageops::overlay(
                 &mut img,
                 &tile_image,
                 x_pos as u32 * tile_size,
@@ -160,7 +158,7 @@ async fn make_map_image(
     let crop_start_x = tile_calc * tile_size + pixel_x as u32 - map_image_size / 2;
     let crop_start_y = tile_calc * tile_size + pixel_y as u32 - map_image_size / 2;
 
-    let dest_image = image::imageops::crop(
+    let dest_image = imageops::crop(
         &mut img,
         crop_start_x,
         crop_start_y,
@@ -171,13 +169,13 @@ async fn make_map_image(
 
     // 自転車アイコン付与
     let cycle_img = image::open("assets/cycle.png")?.to_rgba();
-    let cycle_img = image::imageops::resize(
+    let cycle_img = imageops::resize(
         &cycle_img,
         map_image_size / 20,
         map_image_size / 20,
-        image::imageops::FilterType::Triangle,
+        imageops::FilterType::Triangle,
     );
-    image::imageops::overlay(
+    imageops::overlay(
         &mut img,
         &cycle_img,
         map_image_size / 2 - map_image_size / 40,
