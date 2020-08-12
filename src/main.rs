@@ -11,6 +11,7 @@ use image::DynamicImage;
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
+use std::process::{Child, Command, Stdio};
 use std::{
     ops::Range,
     path::{Path, PathBuf},
@@ -27,20 +28,28 @@ async fn main() -> Result<()> {
     let tile_dir = "tiles";
     let dest_dir = "dest";
 
+    let mut process = make_ffmpeg_process(map_image_size)?;
+    let stdin = process.stdin.as_mut().unwrap();
+
+    println!("kkk");
+
     // ディレクトリ作成
     fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
     fs::create_dir_all(&dest_dir)?; //出力ディレクトリ
 
     let f = File::open("sample_data\\大垂水峠かな.gpx")?;
     let reader = BufReader::new(f);
+    println!("kkk");
 
     let gpx = gpx::read(reader).map_err(|x| anyhow::anyhow!(x.description().to_string()))?;
+    println!("kkk");
     let track = gpx
         .tracks
         .first()
         .ok_or(anyhow::anyhow!("データがみつかりません"))?;
 
     let segment_data = get_points_every_second(track)?;
+    println!("kkk");
     for (pos, point) in segment_data.iter().enumerate() {
         let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
             calc_tile_and_pixel(point.lat, point.lng, zoom);
@@ -63,10 +72,41 @@ async fn main() -> Result<()> {
         )
         .await?;
 
-        image.save_with_format(dest_path, image::ImageFormat::Png)?;
+        // image.save_with_format(dest_path, image::ImageFormat::Png)?;
+        let r = image.as_rgba8().unwrap();
+        let r = r.clone().into_raw();
+        stdin.write_all(&r).unwrap();
     }
 
+    process.wait()?;
+
     Ok(())
+}
+
+fn make_ffmpeg_process(image_size: u32) -> Result<Child> {
+    let cmd = "ffmpeg";
+    let size_text = format!("{}x{}", image_size, image_size);
+    let mut cmd = Command::new(cmd);
+    let cmd = cmd
+        .args(&[
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            "rgba",
+            "-s",
+            &size_text,
+            "-i",
+            "-",
+            "-pix_fmt",
+            "yuv420p",
+            "-vcodec",
+            "libx264",
+            "-movflags",
+            "faststart",
+            "out.mp4",
+        ])
+        .stdin(Stdio::piped());
+    Ok(cmd.spawn()?)
 }
 
 async fn make_map_image(
@@ -81,8 +121,6 @@ async fn make_map_image(
 ) -> Result<DynamicImage> {
     // 必要なタイル数を計算
     let tile_calc = (map_image_size - 1) / tile_size + 1;
-
-    println!("tile_calc: {}", tile_calc);
 
     // 取得するタイルの範囲を設定
     let x_range = Range {
