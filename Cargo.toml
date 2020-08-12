@@ -13,3 +13,4 @@ anyhow = "1.0.32"
 chrono = { version = "0.4", features = ["serde"] }
 globalmaptiles-rs = "0.1.6"
 reqwest = "0.10.7"
+image = "0.23.8"

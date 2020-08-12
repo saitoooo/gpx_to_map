@@ -5,20 +5,31 @@ use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timel
 use globalmaptiles::GlobalMercator;
 use gpx;
 use gpx::Track;
+use image::DynamicImage;
 use std::fs;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Write};
+use std::{
+    ops::Range,
+    path::{Path, PathBuf},
+};
+use std::{thread, time};
 
 const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
 const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    tile_test().await
+}
+
+async fn tile_test() -> Result<()> {
     let lat = 35.6157235;
     let lng = 139.152164;
     let zoom = 16;
+    let map_image_size = 1000;
 
-    let (tile_x, tile_y, pixel_x, pixel_y, _) = calc_tile_and_pixel(lat, lng, zoom);
+    let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) = calc_tile_and_pixel(lat, lng, zoom);
 
     println!(
         "https://tile.openstreetmap.org/{}/{}/{}.png",
@@ -32,23 +43,158 @@ async fn main() -> Result<()> {
     println!("pos: {}-{}", pixel_x, pixel_y);
 
     // ディレクトリ作成
-    fs::create_dir_all("tiles")?;
+    fs::create_dir_all("tiles")?; //タイルディレクトリ
+    fs::create_dir_all("dest")?; //出力ディレクトリ
 
-    let xxx = format!(
-        "https://cyberjapandata.gsi.go.jp/xyz/std/{}/{}/{}.png",
-        zoom, tile_x, tile_y
-    );
-
-    let client = reqwest::Client::new();
-    let r = client.get(&xxx).send().await?;
-
-    let f = File::create("tiles/test.png")?;
-    let mut fw = BufWriter::new(f);
-
-    let ppp = r.bytes().await?;
-    fw.write_all(&ppp)?;
+    make_map_image(
+        &"tiles",
+        &"dest/1.png",
+        zoom,
+        tile_x,
+        tile_y,
+        pixel_x,
+        pixel_y,
+        pixel_size,
+        map_image_size,
+    )
+    .await?;
 
     //gps_test()?;
+    Ok(())
+}
+
+async fn make_map_image(
+    tile_dir: &str,
+    dest_path: &str,
+    zoom: u32,
+    tile_x: i32,
+    tile_y: i32,
+    pixel_x: i32,
+    pixel_y: i32,
+    tile_size: u32,
+    map_image_size: u32,
+) -> Result<()> {
+    // 必要なタイル数を計算
+    let tile_calc = (map_image_size - 1) / tile_size + 1;
+
+    println!("tile_calc: {}", tile_calc);
+
+    // 取得するタイルの範囲を設定
+    let x_range = Range {
+        start: tile_x - tile_calc as i32,
+        end: tile_x + tile_calc as i32 + 1,
+    };
+
+    let y_range = Range {
+        start: tile_y - tile_calc as i32,
+        end: tile_y + tile_calc as i32 + 1,
+    };
+
+    // タイル画像のダウンロード
+    store_map_tile_range(tile_dir, zoom, &x_range, &y_range).await?;
+
+    // 出力用の画像バッファ作成
+    let mut img = DynamicImage::new_rgba8(
+        (tile_calc * 2 + 1) * tile_size,
+        (tile_calc * 2 + 1) * tile_size,
+    );
+
+    // タイルの合成
+    for (x_pos, tile_x) in x_range.clone().enumerate() {
+        for (y_pos, tile_y) in y_range.clone().enumerate() {
+            let tile_image = image::open(make_tile_filename(tile_dir, zoom, tile_x, tile_y))?;
+            let tile_image = tile_image.to_rgba();
+            image::imageops::overlay(
+                &mut img,
+                &tile_image,
+                x_pos as u32 * tile_size,
+                y_pos as u32 * tile_size,
+            );
+        }
+    }
+
+    // タイルの切り抜き
+    let crop_start_x = tile_calc * tile_size + pixel_x as u32 - map_image_size / 2;
+    let crop_start_y = tile_calc * tile_size + pixel_y as u32 - map_image_size / 2;
+
+    let dest_image = image::imageops::crop(
+        &mut img,
+        crop_start_x,
+        crop_start_y,
+        map_image_size,
+        map_image_size,
+    );
+    let mut img = dest_image.to_image();
+
+    // 自転車アイコン付与
+    let cycle_img = image::open("assets/cycle.png")?.to_rgba();
+    let cycle_img = image::imageops::resize(
+        &cycle_img,
+        map_image_size / 20,
+        map_image_size / 20,
+        image::imageops::FilterType::Triangle,
+    );
+    image::imageops::overlay(
+        &mut img,
+        &cycle_img,
+        map_image_size / 2 - map_image_size / 40,
+        map_image_size / 2 - map_image_size / 40,
+    );
+
+    // save
+    img.save_with_format(dest_path, image::ImageFormat::Png)?;
+
+    Ok(())
+}
+
+async fn store_map_tile_range(
+    target_dir: &str,
+    zoom: u32,
+    tile_x_r: &Range<i32>,
+    tile_y_r: &Range<i32>,
+) -> Result<()> {
+    for tile_x in tile_x_r.clone() {
+        for tile_y in tile_y_r.clone() {
+            store_map_tile(target_dir, zoom, tile_x, tile_y).await?
+        }
+    }
+
+    Ok(())
+}
+
+fn make_tile_filename(target_dir: &str, zoom: u32, tile_x: i32, tile_y: i32) -> PathBuf {
+    let store_file = Path::new(target_dir);
+    let store_file = store_file.join(format!("{}-{}-{}.png", zoom, tile_x, tile_y));
+
+    return store_file;
+}
+
+async fn store_map_tile(target_dir: &str, zoom: u32, tile_x: i32, tile_y: i32) -> Result<()> {
+    // ファイル名生成
+    let store_file = make_tile_filename(target_dir, zoom, tile_x, tile_y);
+
+    // ファイル存在チェック
+    if store_file.exists() {
+        return Ok(());
+    }
+
+    // URL 生成
+    let url = format!("{}{}/{}/{}.png", JAPAN_MAP_URL, zoom, tile_x, tile_y);
+
+    // HTTPでデータ取得
+    let client = reqwest::Client::new();
+    let response = client.get(&url).send().await?;
+
+    // ファイルへ保存
+    let f = File::create(store_file)?;
+    let mut fw = BufWriter::new(f);
+
+    fw.write_all(&response.bytes().await?)?;
+
+    // アクセス終わったら一秒まつ(連続アクセスをしないようにするため)
+    let wait_sec = time::Duration::from_secs(1);
+    thread::sleep(wait_sec);
+
     Ok(())
 }
 
