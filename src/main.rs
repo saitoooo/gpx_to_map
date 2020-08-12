@@ -1,4 +1,5 @@
 // https://qiita.com/MALORGIS/items/1a9114dd090e5b891bf7
+// https://icon-rainbow.com/
 
 use anyhow::Result;
 use chrono::{DateTime, Datelike, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
@@ -20,46 +21,49 @@ const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tile_test().await
-}
-
-async fn tile_test() -> Result<()> {
-    let lat = 35.6157235;
-    let lng = 139.152164;
     let zoom = 16;
     let map_image_size = 1000;
-
-    let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) = calc_tile_and_pixel(lat, lng, zoom);
-
-    println!(
-        "https://tile.openstreetmap.org/{}/{}/{}.png",
-        zoom, tile_x, tile_y
-    );
-    println!(
-        "https://cyberjapandata.gsi.go.jp/xyz/std/{}/{}/{}.png",
-        zoom, tile_x, tile_y
-    );
-
-    println!("pos: {}-{}", pixel_x, pixel_y);
+    let tile_dir = "tiles";
+    let dest_dir = "dest";
 
     // ディレクトリ作成
-    fs::create_dir_all("tiles")?; //タイルディレクトリ
-    fs::create_dir_all("dest")?; //出力ディレクトリ
+    fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
+    fs::create_dir_all(&dest_dir)?; //出力ディレクトリ
 
-    make_map_image(
-        &"tiles",
-        &"dest/1.png",
-        zoom,
-        tile_x,
-        tile_y,
-        pixel_x,
-        pixel_y,
-        pixel_size,
-        map_image_size,
-    )
-    .await?;
+    let f = File::open("sample_data\\大垂水峠かな.gpx")?;
+    let reader = BufReader::new(f);
 
-    //gps_test()?;
+    let gpx = gpx::read(reader).map_err(|x| anyhow::anyhow!(x.description().to_string()))?;
+    let track = gpx
+        .tracks
+        .first()
+        .ok_or(anyhow::anyhow!("データがみつかりません"))?;
+
+    let segment_data = get_points_every_second(track)?;
+    for (pos, point) in segment_data.iter().enumerate() {
+        let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
+            calc_tile_and_pixel(point.lat, point.lng, zoom);
+
+        // 出力ファイル名を作成
+        let dest_path = Path::new(dest_dir).join(format!("{}.png", pos));
+        let dest_path = dest_path
+            .to_str()
+            .ok_or(anyhow::anyhow!("出力ファイル名生成に失敗"))?;
+
+        make_map_image(
+            &tile_dir,
+            dest_path,
+            zoom,
+            tile_x,
+            tile_y,
+            pixel_x,
+            pixel_y,
+            pixel_size,
+            map_image_size,
+        )
+        .await?;
+    }
+
     Ok(())
 }
 
@@ -214,54 +218,6 @@ fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32, u3
 
     // 結果をタプルにして返します
     (tile_x, tile_y, pixel_x, pixel_y, t.tile_size())
-}
-
-fn gps_test() -> Result<()> {
-    let xxx = NaiveDateTime::parse_from_str("2020-08-01 11:11:11", "%Y-%m-%d %H:%M:%S")?;
-    let yyy: DateTime<Utc> = Local.from_local_datetime(&xxx).unwrap().into();
-    println!("{}", xxx);
-    println!("{}", yyy);
-
-    println!("Hello, world!");
-
-    let f = File::open("sample_data\\大垂水峠かな.gpx")?;
-    let reader = BufReader::new(f);
-
-    let gpx_result = gpx::read(reader);
-    let o = gpx_result.map(|gpx| {
-        println!("トラック数: {}", gpx.tracks.len());
-
-        for (pos, track) in gpx.tracks.iter().enumerate() {
-            let (min, max) = get_star_and_end_time(track).unwrap();
-            println!("min: {}, max: {}", min, max);
-            let segment_data = get_points_every_second(track).unwrap();
-            for x in segment_data {
-                println!("{:?}", x);
-            }
-
-            println!("セグメント数 {}: {}", pos, track.segments.len());
-
-            // for (segment_no, segment) in track.segments.iter().enumerate() {
-            //     for (point_no, waypoint) in segment.points.iter().enumerate() {
-            //         let point = waypoint.point();
-            //         println!(
-            //             "{}-{}: time={}, lat={}, lng={}",
-            //             segment_no,
-            //             point_no,
-            //             waypoint.time.unwrap(),
-            //             point.lat(),
-            //             point.lng()
-            //         );
-            //     }
-            // }
-        }
-
-        gpx
-    });
-
-    o.map_err(|x| anyhow::anyhow!(x.description().to_string()))?;
-
-    Ok(())
 }
 
 #[derive(Debug)]
