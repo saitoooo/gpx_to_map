@@ -25,39 +25,28 @@ async fn main() -> Result<()> {
     let zoom = 16;
     let map_image_size = 1000;
     let tile_dir = "tiles";
-    let dest_dir = "dest";
-
-    let mut process = make_ffmpeg_process(map_image_size)?;
-    let stdin = process.stdin.as_mut().unwrap();
-
-    println!("kkk");
-
-    // ディレクトリ作成
-    fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
-    fs::create_dir_all(&dest_dir)?; //出力ディレクトリ
+    let dest_path = "dest.mp4";
 
     let f = File::open("sample_data\\大垂水峠かな.gpx")?;
     let reader = BufReader::new(f);
-    println!("kkk");
 
     let gpx = gpx::read(reader).map_err(|x| anyhow::anyhow!(x.description().to_string()))?;
-    println!("kkk");
     let track = gpx
         .tracks
         .first()
         .ok_or(anyhow::anyhow!("データがみつかりません"))?;
 
     let segment_data = get_points_every_second(track)?;
-    println!("kkk");
-    for (pos, point) in segment_data.iter().enumerate() {
+
+    let mut process = make_ffmpeg_process(map_image_size, dest_path)?;
+    let stdin = process.stdin.as_mut().unwrap();
+
+    // ディレクトリ作成
+    fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
+
+    for point in segment_data.iter() {
         let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
             calc_tile_and_pixel(point.lat, point.lng, zoom);
-
-        // 出力ファイル名を作成
-        let dest_path = Path::new(dest_dir).join(format!("{}.png", pos));
-        let dest_path = dest_path
-            .to_str()
-            .ok_or(anyhow::anyhow!("出力ファイル名生成に失敗"))?;
 
         let image = make_map_image(
             &tile_dir,
@@ -81,7 +70,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn make_ffmpeg_process(image_size: u32) -> Result<Child> {
+fn make_ffmpeg_process(image_size: u32, outfile: &str) -> Result<Child> {
     let cmd = "ffmpeg";
     let size_text = format!("{}x{}", image_size, image_size);
     let mut cmd = Command::new(cmd);
@@ -101,7 +90,7 @@ fn make_ffmpeg_process(image_size: u32) -> Result<Child> {
             "libx264",
             "-movflags",
             "faststart",
-            "out.mp4",
+            outfile,
         ])
         .stdin(Stdio::piped());
     Ok(cmd.spawn()?)
