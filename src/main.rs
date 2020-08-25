@@ -3,7 +3,7 @@
 // https://qiita.com/tasshi/items/de36d9add14f24317f47
 
 use anyhow::Result;
-use chrono::{DateTime, Duration, Timelike, Utc};
+use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
 use globalmaptiles::GlobalMercator;
 use gpx::Track;
 use image::{imageops, DynamicImage};
@@ -23,11 +23,38 @@ const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
 #[tokio::main]
 async fn main() -> Result<()> {
     let zoom = 16;
-    let map_image_size = 1000;
+    let map_image_size = 400;
     let tile_dir = "tiles";
     let dest_path = "dest.mp4";
 
-    let f = File::open("sample_data\\大垂水峠かな.gpx")?;
+    let start_date = NaiveDateTime::parse_from_str("2020-08-01 10:20:00", "%Y-%m-%d %H:%M:%S")?;
+    let start_date: DateTime<Utc> = Local.from_local_datetime(&start_date).unwrap().into();
+
+    let end_date = NaiveDateTime::parse_from_str("2020-08-01 11:10:00", "%Y-%m-%d %H:%M:%S")?;
+    let end_date: DateTime<Utc> = Local.from_local_datetime(&end_date).unwrap().into();
+
+    gpx_to_map_movie(
+        "sample_data\\大垂水峠かな.gpx",
+        dest_path,
+        Some(start_date),
+        Some(end_date),
+        map_image_size,
+        zoom,
+        tile_dir,
+    )
+    .await
+}
+
+async fn gpx_to_map_movie(
+    gpx_file: &str,
+    dest_path: &str,
+    start_date: Option<DateTime<Utc>>,
+    end_date: Option<DateTime<Utc>>,
+    map_image_size: u32,
+    zoom: u32,
+    tile_dir: &str,
+) -> Result<()> {
+    let f = File::open(gpx_file)?;
     let reader = BufReader::new(f);
 
     let gpx = gpx::read(reader).map_err(|x| anyhow::anyhow!(x.description().to_string()))?;
@@ -36,7 +63,20 @@ async fn main() -> Result<()> {
         .first()
         .ok_or(anyhow::anyhow!("データがみつかりません"))?;
 
-    let segment_data = get_points_every_second(track)?;
+    let mut segment_data = get_points_every_second(track)?;
+    if let Some(start_date) = start_date {
+        segment_data = segment_data
+            .into_iter()
+            .filter(|item| item.time >= start_date)
+            .collect();
+    }
+
+    if let Some(end_date) = end_date {
+        segment_data = segment_data
+            .into_iter()
+            .filter(|item| item.time <= end_date)
+            .collect();
+    }
 
     let mut process = make_ffmpeg_process(map_image_size, dest_path)?;
     let stdin = process.stdin.as_mut().unwrap();
@@ -76,6 +116,8 @@ fn make_ffmpeg_process(image_size: u32, outfile: &str) -> Result<Child> {
     let mut cmd = Command::new(cmd);
     let cmd = cmd
         .args(&[
+            "-framerate",
+            "1",
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -90,6 +132,8 @@ fn make_ffmpeg_process(image_size: u32, outfile: &str) -> Result<Child> {
             "libx264",
             "-movflags",
             "faststart",
+            "-r",
+            "60",
             outfile,
         ])
         .stdin(Stdio::piped());
