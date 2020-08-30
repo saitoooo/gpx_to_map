@@ -2,8 +2,12 @@
 // https://icon-rainbow.com/
 // https://qiita.com/tasshi/items/de36d9add14f24317f47
 
+mod arguments;
+
 use anyhow::Result;
-use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Timelike, Utc};
+use arguments::Opts;
+use chrono::{DateTime, Duration, Timelike, Utc};
+use clap::Clap;
 use globalmaptiles::GlobalMercator;
 use gpx::Track;
 use image::{imageops, DynamicImage};
@@ -17,30 +21,21 @@ use std::{
     thread, time,
 };
 
-const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
+// const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
 const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let zoom = 16;
-    let map_image_size = 400;
-    let tile_dir = "tiles";
-    let dest_path = "dest.mp4";
-
-    let start_date = NaiveDateTime::parse_from_str("2020-08-01 10:20:00", "%Y-%m-%d %H:%M:%S")?;
-    let start_date: DateTime<Utc> = Local.from_local_datetime(&start_date).unwrap().into();
-
-    let end_date = NaiveDateTime::parse_from_str("2020-08-01 11:10:00", "%Y-%m-%d %H:%M:%S")?;
-    let end_date: DateTime<Utc> = Local.from_local_datetime(&end_date).unwrap().into();
+    let opts: Opts = Opts::parse();
 
     gpx_to_map_movie(
-        "sample_data\\大垂水峠かな.gpx",
-        dest_path,
-        Some(start_date),
-        Some(end_date),
-        map_image_size,
-        zoom,
-        tile_dir,
+        &opts.gpx_file,
+        &opts.dest_file,
+        opts.get_start_date(),
+        opts.get_end_date(),
+        opts.map_image_size,
+        opts.zoom,
+        &opts.tile_dir,
     )
     .await
 }
