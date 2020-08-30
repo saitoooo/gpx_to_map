@@ -14,3 +14,4 @@ chrono = { version = "0.4", features = ["serde"] }
 globalmaptiles-rs = "0.1.6"
 reqwest = "0.10.7"
 image = "0.23.8"
+clap = { version = "3.0.0-beta.1" }
