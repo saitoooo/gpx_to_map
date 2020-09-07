@@ -12,7 +12,7 @@ use globalmaptiles::GlobalMercator;
 use gpx::Track;
 use image::{imageops, DynamicImage};
 use std::{
-    fs,
+    env, fs,
     fs::File,
     io::{BufReader, BufWriter, Write},
     ops::Range,
@@ -23,6 +23,7 @@ use std::{
 
 // const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
 const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
+const ASSET_CYCLE_ICON: &str = "assets/cycle.png";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -93,7 +94,16 @@ async fn gpx_to_map_movie(
             pixel_size,
             map_image_size,
         )
-        .await?;
+        .await;
+
+        let image = match image {
+            Ok(i) => i,
+            Err(e) => {
+                println!("{}", e);
+                process.wait()?;
+                std::process::exit(-1);
+            }
+        };
 
         let r = image.as_rgba8().unwrap();
         let r = r.clone().into_raw();
@@ -196,7 +206,15 @@ async fn make_map_image(
     let mut img = dest_image.to_image();
 
     // 自転車アイコン付与
-    let cycle_img = image::open("assets/cycle.png")?.to_rgba();
+    let mut icon_path = std::env::current_exe()?
+        .parent()
+        .map(|p| p.join(ASSET_CYCLE_ICON))
+        .ok_or(anyhow::anyhow!("cycle.pngのパスが解決できませんでした"))?;
+    if icon_path.exists() == false {
+        icon_path = std::env::current_dir()?.join(ASSET_CYCLE_ICON);
+    }
+
+    let cycle_img = image::open(icon_path)?.to_rgba();
     let cycle_img = imageops::resize(
         &cycle_img,
         map_image_size / 20,
