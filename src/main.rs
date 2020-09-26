@@ -6,13 +6,13 @@ mod arguments;
 
 use anyhow::Result;
 use arguments::Opts;
-use chrono::{DateTime, Duration, Timelike, Utc};
+use chrono::{DateTime, Datelike, Duration, Timelike, Utc};
 use clap::Clap;
 use globalmaptiles::GlobalMercator;
 use gpx::Track;
 use image::{imageops, DynamicImage};
 use std::{
-    env, fs,
+    fs,
     fs::File,
     io::{BufReader, BufWriter, Write},
     ops::Range,
@@ -41,6 +41,252 @@ async fn main() -> Result<()> {
     .await
 }
 
+#[test]
+fn hoge() {
+    let f = File::open("sample_data/大垂水峠かな.gpx").unwrap();
+    let reader = BufReader::new(f);
+
+    let gpx = gpx::read(reader).unwrap();
+    let track = gpx.tracks.first().unwrap();
+
+    // 2020-07-31T22:27:46.000Z
+
+    let start_date: Option<DateTime<Utc>> = Utc::now()
+        .with_year(2020)
+        .and_then(|t| t.with_month(7))
+        .and_then(|t| t.with_day(31))
+        .and_then(|t| t.with_hour(22))
+        .and_then(|t| t.with_minute(27))
+        .and_then(|t| t.with_second(46))
+        .and_then(|t| t.with_nanosecond(0));
+
+    let end_date: Option<DateTime<Utc>> = None;
+
+    let mut iter = TrackIter::get_iter(track, 60, start_date, end_date);
+    let r = iter.move_to_dt(start_date.unwrap());
+    let next = iter.point_next.clone().unwrap();
+    let prev = iter.point_prev.clone().unwrap();
+
+    assert_eq!(r, true);
+    let r2 = iter.move_to_dt(start_date.unwrap());
+    let next2 = iter.point_next.clone().unwrap();
+    let prev2 = iter.point_prev.clone().unwrap();
+
+    assert_eq!(r2, true);
+
+    assert_eq!(prev.time, prev2.time);
+    assert_eq!(next.time, next2.time);
+
+    println!("{:?} {:?}", prev, next);
+
+    println!("{:?} {:?}", prev2, next2);
+
+    let r = TrackIter::calc_position(&prev, &next, start_date.unwrap());
+    println!("{:?}", r);
+
+    assert_eq!(next.lat, r.lat);
+    assert_eq!(next.lng, r.lng);
+}
+
+#[test]
+fn hage() {
+    let f = File::open("sample_data/大垂水峠かな.gpx").unwrap();
+    let reader = BufReader::new(f);
+
+    let gpx = gpx::read(reader).unwrap();
+    let track = gpx.tracks.first().unwrap();
+
+    let start_date: Option<DateTime<Utc>> = Utc::now()
+        .with_year(2020)
+        .and_then(|t| t.with_month(7))
+        .and_then(|t| t.with_day(31))
+        .and_then(|t| t.with_hour(22))
+        .and_then(|t| t.with_minute(27))
+        .and_then(|t| t.with_second(46))
+        .and_then(|t| t.with_nanosecond(0));
+
+
+        let end_date: Option<DateTime<Utc>> = Utc::now()
+        .with_year(2020)
+        .and_then(|t| t.with_month(7))
+        .and_then(|t| t.with_day(31))
+        .and_then(|t| t.with_hour(22))
+        .and_then(|t| t.with_minute(30))
+        .and_then(|t| t.with_second(46))
+        .and_then(|t| t.with_nanosecond(0));
+
+    let iter = TrackIter::get_iter(track, 2, start_date, end_date);
+    for track in iter {
+        println!("{:?}", track);
+    }
+    panic!("kkk");
+
+}
+
+struct TrackIter<'a> {
+    points: Box<(dyn Iterator<Item = TrackPoint> + 'a)>,
+    fps: usize,
+    start_dt: Option<DateTime<Utc>>,
+
+    end_dt: Option<DateTime<Utc>>,
+
+    current: Option<DateTime<Utc>>,
+    current_fps: usize,
+    point_prev: Option<TrackPoint>,
+    point_next: Option<TrackPoint>,
+}
+
+impl<'a> TrackIter<'a> {
+    fn get_iter(
+        track: &'a Track,
+        fps: usize,
+        start_dt: Option<DateTime<Utc>>,
+        end_dt: Option<DateTime<Utc>>,
+    ) -> Self {
+        // 日時のあるポイントだけを取得します
+        let points = track
+            .segments
+            .iter()
+            .flat_map(|item| {
+                let xx = item.clone();
+                xx.points.into_iter().clone()
+            })
+            .filter(|item| item.time.is_some())
+            .map(|point| TrackPoint {
+                time: point.time.unwrap(),
+                lat: point.point().lat(),
+                lng: point.point().lng(),
+            });
+
+        let iter = points.into_iter();
+        TrackIter {
+            points: Box::new(iter),
+            fps,
+            start_dt,
+            end_dt,
+            current: None,
+            current_fps: 0,
+            point_next: None,
+            point_prev: None,
+        }
+    }
+
+    // 指定された日付の位置まで移動する関数
+    fn move_to_dt(&mut self, dt: DateTime<Utc>) -> bool {
+        let f = |dt: DateTime<Utc>, point: &Option<TrackPoint>| -> bool {
+            // 最初に範囲内であればそのまま抜ける
+            if let Some(tp) = point {
+                if tp.time >= dt {
+                    return true; //場所見つかった
+                }
+            }
+
+            false
+        };
+
+        if f(dt, &self.point_next) {
+            return true;
+        }
+
+        // 指定された日付までデータを探す
+        while let Some(point) = self.points.next() {
+            self.point_prev = self.point_next;
+            self.point_next = Some(point);
+
+            // 開始日付チェック
+            if f(dt, &self.point_next) {
+                return true; //場所見つかった
+            }
+        }
+
+        false
+    }
+
+    // 位置計算
+    fn calc_position(prev: &TrackPoint, next: &TrackPoint, current: DateTime<Utc>) -> TrackPoint {
+        let current_mills = current.timestamp_millis();
+        let prev_mills = prev.time.timestamp_millis();
+        let next_mills = next.time.timestamp_millis();
+
+        // current_millsが範囲内かチェック
+        if prev_mills > current_mills && next_mills < current_mills {
+            panic!("パラメータ範囲エラー");
+        }
+
+        // prev, next が同一の場合、計算不要でprevを返す(先頭データのみ発生する)
+        if prev_mills == next_mills {
+            return prev.clone();
+        }
+
+        // 比率から lat, lng を計算
+        let ratio =
+            (current_mills as f64 - prev_mills as f64) / (next_mills as f64 - prev_mills as f64);
+
+        TrackPoint {
+            lat: prev.lat + (next.lat - prev.lat) * ratio,
+            lng: prev.lng + (next.lng - prev.lng) * ratio,
+            time: current,
+        }
+    }
+}
+
+impl<'a> Iterator for TrackIter<'a> {
+    type Item = TrackPoint;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // 初回かどうかの確認
+        if self.current.is_none() {
+            // 最初の日付を取ります
+            if let Some(tp) = self.points.next() {
+                self.point_prev = Some(tp);
+                self.point_next = Some(tp);
+
+                self.current = if self.start_dt.is_some() {
+                    self.start_dt
+                } else {
+                    Some(tp.time)
+                };
+
+                self.current_fps = 0;
+            } else {
+                return None;
+            }
+        }
+
+        // ターゲットの時間をmsec単位で取得する
+        let duration = Duration::milliseconds((self.current_fps * 100 / self.fps) as i64);
+        let current: DateTime<Utc> = self.current.unwrap() + duration;
+
+        // 終了時間過ぎているかチェック
+        if let Some(dt) = self.end_dt {
+            if dt < current {
+                return None
+            }
+        }
+
+        // データを探します
+        if self.move_to_dt(current) == false {
+            return None;
+        }
+
+        // 位置計算
+        let track_point = TrackIter::calc_position(
+            &self.point_prev.unwrap(),
+            &self.point_next.unwrap(),
+            current,
+        );
+
+        // 次のデータへカウントアップ
+        self.current_fps = self.current_fps + 1;
+        if self.current_fps >= self.fps {
+            self.current = Some(self.current.unwrap() + Duration::seconds(1));
+            self.current_fps = 0;
+        }
+
+        Some(track_point)
+    }
+}
+
 async fn gpx_to_map_movie(
     gpx_file: &str,
     dest_path: &str,
@@ -59,20 +305,8 @@ async fn gpx_to_map_movie(
         .first()
         .ok_or(anyhow::anyhow!("データがみつかりません"))?;
 
-    let mut segment_data = get_points_every_second(track)?;
-    if let Some(start_date) = start_date {
-        segment_data = segment_data
-            .into_iter()
-            .filter(|item| item.time >= start_date)
-            .collect();
-    }
+    let iter = TrackIter::get_iter(track, 60, start_date, end_date);
 
-    if let Some(end_date) = end_date {
-        segment_data = segment_data
-            .into_iter()
-            .filter(|item| item.time <= end_date)
-            .collect();
-    }
 
     let mut process = make_ffmpeg_process(map_image_size, dest_path)?;
     let stdin = process.stdin.as_mut().unwrap();
@@ -80,7 +314,7 @@ async fn gpx_to_map_movie(
     // ディレクトリ作成
     fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
 
-    for point in segment_data.iter() {
+    for point in iter {
         let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
             calc_tile_and_pixel(point.lat, point.lng, zoom);
 
@@ -301,135 +535,11 @@ fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32, u3
     (tile_x, tile_y, pixel_x, pixel_y, t.tile_size())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct TrackPoint {
     time: DateTime<Utc>,
     lat: f64,
     lng: f64,
 }
 
-// 秒ごとの位置情報を取得
-fn get_points_every_second(track: &Track) -> Result<Vec<TrackPoint>> {
-    let mut results: Vec<TrackPoint> = Vec::new();
-    let (start, end) = get_star_and_end_time(track)?;
-    let start = start
-        .with_nanosecond(0)
-        .ok_or(anyhow::anyhow!("時間調整でエラーが発生しました"))?;
-    let end = end
-        .with_nanosecond(0)
-        .ok_or(anyhow::anyhow!("時間調整でエラーが発生しました"))?;
 
-    // 日時のあるポイントだけを取得します
-    let mut points = track
-        .segments
-        .iter()
-        .flat_map(|item| item.points.iter())
-        .filter(|item| item.time.is_some())
-        .peekable();
-
-    let mut target = start.clone();
-    let mut waypoint_opt = points.next();
-    while target < end && waypoint_opt.is_some() {
-        let point = waypoint_opt.unwrap();
-        let peek_point_opt = points.peek();
-
-        let point_time = point
-            .time
-            .unwrap()
-            .with_nanosecond(0)
-            .ok_or(anyhow::anyhow!("日付調整でエラーが発生しました"))?;
-
-        // targetの日時が最後まで来ていたら抜ける
-        if point_time < target && peek_point_opt.is_none() {
-            println!("Breakで抜ける");
-            break;
-        }
-
-        // peekな日時を取得
-        let peek_time = peek_point_opt
-            .unwrap()
-            .time
-            .unwrap()
-            .with_nanosecond(0)
-            .ok_or(anyhow::anyhow!("日付調整でエラーが発生しました"))?;
-
-        // 次のデータの領域ならnextしてcontinue
-        if point_time < peek_time && peek_time <= target {
-            waypoint_opt = points.next();
-            continue;
-        }
-
-        //
-        if point_time == target {
-            //todo!("現在データを保存");
-            results.push(TrackPoint {
-                time: point_time,
-                lat: point.point().lat(),
-                lng: point.point().lng(),
-            })
-        } else {
-            //差分計算
-            let diff_a: Duration = peek_time - point_time;
-            let diff_b: Duration = target - point_time;
-
-            let percent = (diff_b.num_seconds() as f64) / (diff_a.num_seconds() as f64);
-
-            // lat, lng 計算
-            let p1 = point.point();
-            let p2 = peek_point_opt.unwrap().point();
-            let lat = p1.lat() + (p2.lat() - p1.lat()) * percent;
-            let lng = p1.lng() + (p2.lng() - p1.lng()) * percent;
-
-            // データをストア
-            results.push(TrackPoint {
-                time: target,
-                lat: lat,
-                lng: lng,
-            })
-        }
-
-        // 次の一秒分の処理
-        target = target + Duration::seconds(1);
-    }
-
-    // Err(anyhow::anyhow!("test"))
-
-    Ok(results)
-}
-
-fn get_star_and_end_time(track: &Track) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
-    let (min, max) = track
-        .segments
-        .iter()
-        .fold((None, None), |(min, max), segment| {
-            let (min, max) = segment.points.iter().fold((min, max), |(min, max), point| {
-                if let Some(dt) = point.time {
-                    //最小チェック
-                    let next_min = if min.is_none() || dt < min.unwrap() {
-                        Some(dt)
-                    } else {
-                        min
-                    };
-
-                    //最大チェック
-                    let next_max = if max.is_none() || dt > max.unwrap() {
-                        Some(dt)
-                    } else {
-                        max
-                    };
-
-                    (next_min, next_max)
-                } else {
-                    (min, max)
-                }
-            });
-
-            (min, max)
-        });
-
-    if min.is_none() || max.is_none() {
-        Err(anyhow::anyhow!("データが見つかりませんでした"))
-    } else {
-        Ok((min.unwrap(), max.unwrap()))
-    }
-}
