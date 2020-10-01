@@ -3,16 +3,16 @@
 // https://qiita.com/tasshi/items/de36d9add14f24317f47
 
 mod arguments;
+mod track_point;
 
 use anyhow::Result;
 use arguments::Opts;
-use chrono::{DateTime, Duration, Timelike, Utc};
+use chrono::{DateTime, Utc};
 use clap::Clap;
 use globalmaptiles::GlobalMercator;
-use gpx::Track;
 use image::{imageops, DynamicImage};
 use std::{
-    env, fs,
+    fs,
     fs::File,
     io::{BufReader, BufWriter, Write},
     ops::Range,
@@ -20,6 +20,7 @@ use std::{
     process::{Child, Command, Stdio},
     thread, time,
 };
+use track_point::TrackIter;
 
 // const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
 const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
@@ -59,20 +60,8 @@ async fn gpx_to_map_movie(
         .first()
         .ok_or(anyhow::anyhow!("データがみつかりません"))?;
 
-    let mut segment_data = get_points_every_second(track)?;
-    if let Some(start_date) = start_date {
-        segment_data = segment_data
-            .into_iter()
-            .filter(|item| item.time >= start_date)
-            .collect();
-    }
+    let iter = TrackIter::get_iter(track, 60, start_date, end_date);
 
-    if let Some(end_date) = end_date {
-        segment_data = segment_data
-            .into_iter()
-            .filter(|item| item.time <= end_date)
-            .collect();
-    }
 
     let mut process = make_ffmpeg_process(map_image_size, dest_path)?;
     let stdin = process.stdin.as_mut().unwrap();
@@ -80,7 +69,7 @@ async fn gpx_to_map_movie(
     // ディレクトリ作成
     fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
 
-    for point in segment_data.iter() {
+    for point in iter {
         let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
             calc_tile_and_pixel(point.lat, point.lng, zoom);
 
@@ -301,135 +290,5 @@ fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32, u3
     (tile_x, tile_y, pixel_x, pixel_y, t.tile_size())
 }
 
-#[derive(Debug)]
-struct TrackPoint {
-    time: DateTime<Utc>,
-    lat: f64,
-    lng: f64,
-}
 
-// 秒ごとの位置情報を取得
-fn get_points_every_second(track: &Track) -> Result<Vec<TrackPoint>> {
-    let mut results: Vec<TrackPoint> = Vec::new();
-    let (start, end) = get_star_and_end_time(track)?;
-    let start = start
-        .with_nanosecond(0)
-        .ok_or(anyhow::anyhow!("時間調整でエラーが発生しました"))?;
-    let end = end
-        .with_nanosecond(0)
-        .ok_or(anyhow::anyhow!("時間調整でエラーが発生しました"))?;
 
-    // 日時のあるポイントだけを取得します
-    let mut points = track
-        .segments
-        .iter()
-        .flat_map(|item| item.points.iter())
-        .filter(|item| item.time.is_some())
-        .peekable();
-
-    let mut target = start.clone();
-    let mut waypoint_opt = points.next();
-    while target < end && waypoint_opt.is_some() {
-        let point = waypoint_opt.unwrap();
-        let peek_point_opt = points.peek();
-
-        let point_time = point
-            .time
-            .unwrap()
-            .with_nanosecond(0)
-            .ok_or(anyhow::anyhow!("日付調整でエラーが発生しました"))?;
-
-        // targetの日時が最後まで来ていたら抜ける
-        if point_time < target && peek_point_opt.is_none() {
-            println!("Breakで抜ける");
-            break;
-        }
-
-        // peekな日時を取得
-        let peek_time = peek_point_opt
-            .unwrap()
-            .time
-            .unwrap()
-            .with_nanosecond(0)
-            .ok_or(anyhow::anyhow!("日付調整でエラーが発生しました"))?;
-
-        // 次のデータの領域ならnextしてcontinue
-        if point_time < peek_time && peek_time <= target {
-            waypoint_opt = points.next();
-            continue;
-        }
-
-        //
-        if point_time == target {
-            //todo!("現在データを保存");
-            results.push(TrackPoint {
-                time: point_time,
-                lat: point.point().lat(),
-                lng: point.point().lng(),
-            })
-        } else {
-            //差分計算
-            let diff_a: Duration = peek_time - point_time;
-            let diff_b: Duration = target - point_time;
-
-            let percent = (diff_b.num_seconds() as f64) / (diff_a.num_seconds() as f64);
-
-            // lat, lng 計算
-            let p1 = point.point();
-            let p2 = peek_point_opt.unwrap().point();
-            let lat = p1.lat() + (p2.lat() - p1.lat()) * percent;
-            let lng = p1.lng() + (p2.lng() - p1.lng()) * percent;
-
-            // データをストア
-            results.push(TrackPoint {
-                time: target,
-                lat: lat,
-                lng: lng,
-            })
-        }
-
-        // 次の一秒分の処理
-        target = target + Duration::seconds(1);
-    }
-
-    // Err(anyhow::anyhow!("test"))
-
-    Ok(results)
-}
-
-fn get_star_and_end_time(track: &Track) -> Result<(DateTime<Utc>, DateTime<Utc>)> {
-    let (min, max) = track
-        .segments
-        .iter()
-        .fold((None, None), |(min, max), segment| {
-            let (min, max) = segment.points.iter().fold((min, max), |(min, max), point| {
-                if let Some(dt) = point.time {
-                    //最小チェック
-                    let next_min = if min.is_none() || dt < min.unwrap() {
-                        Some(dt)
-                    } else {
-                        min
-                    };
-
-                    //最大チェック
-                    let next_max = if max.is_none() || dt > max.unwrap() {
-                        Some(dt)
-                    } else {
-                        max
-                    };
-
-                    (next_min, next_max)
-                } else {
-                    (min, max)
-                }
-            });
-
-            (min, max)
-        });
-
-    if min.is_none() || max.is_none() {
-        Err(anyhow::anyhow!("データが見つかりませんでした"))
-    } else {
-        Ok((min.unwrap(), max.unwrap()))
-    }
-}
