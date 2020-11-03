@@ -1,6 +1,47 @@
-
 use chrono::{DateTime,  Duration,  Utc};
 use gpx::Track;
+
+pub struct GroupIterater<T:Iterator> {
+    iterator: T,
+    next_count: usize,
+}
+
+impl<T:Iterator> GroupIterater<T> {
+    pub fn new(iterator: T, next_count: usize) -> Self {
+        Self {
+            iterator,
+            next_count
+        }
+    }
+}
+
+impl<T> Iterator for GroupIterater<T> where T:Iterator {
+    type Item = Vec<T::Item>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut result: Vec<T::Item> = Vec::new();
+        
+        let mut now_count = 0;
+        while let Some(item) = self.iterator.next() {
+            
+            result.push(item);
+
+            now_count += 1;
+            
+            if now_count >= self.next_count {
+                break;
+            }
+        }
+
+        if now_count == 0 {
+            None 
+        } else {
+            Some(result)
+        }
+    }
+}
+
+
 
 #[derive(Debug, Clone, Copy)]
 pub struct TrackPoint {
@@ -260,6 +301,4 @@ fn hage() {
     for track in iter {
         println!("{:?}", track);
     }
-    panic!("kkk");
-
 }
