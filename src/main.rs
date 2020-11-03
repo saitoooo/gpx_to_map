@@ -3,6 +3,7 @@
 // https://qiita.com/tasshi/items/de36d9add14f24317f47
 
 mod arguments;
+mod map_image;
 mod track_point;
 
 use anyhow::Result;
@@ -11,19 +12,12 @@ use chrono::{DateTime, Utc};
 use clap::Clap;
 use globalmaptiles::GlobalMercator;
 use image::{imageops, DynamicImage};
-use std::{
-    fs,
-    fs::File,
-    io::{BufReader, BufWriter, Write},
-    ops::Range,
-    path::{Path, PathBuf},
-    process::{Child, Command, Stdio},
-    thread, time,
-};
-use track_point::TrackIter;
-
+use map_image::MapBaseImage;
+use std::{fs, fs::File, io::{BufReader, Write}, process::{Child, Command, Stdio}, sync::Arc, sync::Mutex, sync::mpsc::{self, Receiver, Sender}, thread};
+use track_point::{GroupIterater, TrackIter};
+use tokio::{task::JoinHandle};
 // const OPENSTREAT_MAP_URL: &str = "https://tile.openstreetmap.org/";
-const JAPAN_MAP_URL: &str = "https://cyberjapandata.gsi.go.jp/xyz/std/";
+
 const ASSET_CYCLE_ICON: &str = "assets/cycle.png";
 
 #[tokio::main]
@@ -60,46 +54,88 @@ async fn gpx_to_map_movie(
         .first()
         .ok_or(anyhow::anyhow!("データがみつかりません"))?;
 
-    let iter = TrackIter::get_iter(track, 60, start_date, end_date);
-
-
-    let mut process = make_ffmpeg_process(map_image_size, dest_path)?;
-    let stdin = process.stdin.as_mut().unwrap();
+    // let giter = GroupIterater::new(TrackIter::get_iter(track, 30, start_date, end_date), 24);
+    let iter = TrackIter::get_iter(track, 30, start_date, end_date);
 
     // ディレクトリ作成
     fs::create_dir_all(&tile_dir)?; //タイルディレクトリ
 
-    for point in iter {
-        let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
-            calc_tile_and_pixel(point.lat, point.lng, zoom);
+    // 通信用チャンネル作成
+    let (tx, rx):(Sender<Mutex<Option<DynamicImage>>>, Receiver<Mutex<Option<DynamicImage>>>) = mpsc::channel();
 
-        let image = make_map_image(
-            &tile_dir,
-            zoom,
-            tile_x,
-            tile_y,
-            pixel_x,
-            pixel_y,
-            pixel_size,
-            map_image_size,
-        )
-        .await;
+    // タイルのキャッシュを取得
+    let tile_cache:Arc<Mutex<Vec<(i32, i32, DynamicImage)>>> = Arc::new(Mutex::new(Vec::new()));
 
-        let image = match image {
-            Ok(i) => i,
-            Err(e) => {
-                println!("{}", e);
-                process.wait()?;
-                std::process::exit(-1);
+    // 出力用スレッド生成
+    let dest_path = dest_path.to_string();
+    let handle = thread::spawn( move || {
+        let mut process = make_ffmpeg_process(map_image_size, &dest_path).unwrap();
+        let stdin = process.stdin.as_mut().unwrap();
+
+        while let Ok(x) = rx.recv() {
+            let r = x.lock().unwrap().clone();
+            
+
+            if let Some(data) = r {
+                let r = data.as_rgba8().unwrap();
+                let r = r.clone().into_raw();
+
+                stdin.write_all(&r).unwrap();
+            } else {
+                break;
             }
-        };
 
-        let r = image.as_rgba8().unwrap();
-        let r = r.clone().into_raw();
-        stdin.write_all(&r).unwrap();
-    }
+        }
+        process.wait().unwrap();
 
-    process.wait()?;
+    });
+    
+    let giter = GroupIterater::new(iter, 6);
+
+
+    //for point in iter {
+    for group_items in giter {
+        let mut tasks :Vec<Box<JoinHandle<Result<DynamicImage>>>> = Vec::new();
+
+        for point in group_items {
+
+            let (tile_x, tile_y, pixel_x, pixel_y, pixel_size) =
+                calc_tile_and_pixel(point.lat, point.lng, zoom);
+    
+            let future = make_map_image(
+                zoom,
+                tile_x,
+                tile_y,
+                pixel_x,
+                pixel_y,
+                pixel_size,
+                map_image_size,
+                tile_dir.to_string(),
+                tile_cache.clone(),
+            );
+            
+            let x = tokio::task::spawn(future);
+            tasks.push(Box::new(x));
+        }
+
+        for task in tasks {
+           let image = task.await?;
+           match image {
+               Ok(image) => {
+                    tx.send(Mutex::new(Some( image ))).unwrap();
+               },
+               Err(i) => println!("{}", i)
+           }
+
+            
+
+        }
+    };  
+
+    tx.send(Mutex::new(None)).unwrap();
+
+    handle.join().expect("出力処理でエラーが発生しました");
+
 
     Ok(())
 }
@@ -111,7 +147,7 @@ fn make_ffmpeg_process(image_size: u32, outfile: &str) -> Result<Child> {
     let cmd = cmd
         .args(&[
             "-framerate",
-            "1",
+            "30",
             "-f",
             "rawvideo",
             "-pix_fmt",
@@ -134,8 +170,7 @@ fn make_ffmpeg_process(image_size: u32, outfile: &str) -> Result<Child> {
     Ok(cmd.spawn()?)
 }
 
-async fn make_map_image(
-    tile_dir: &str,
+async fn make_map_image<'a>(
     zoom: u32,
     tile_x: i32,
     tile_y: i32,
@@ -143,43 +178,19 @@ async fn make_map_image(
     pixel_y: i32,
     tile_size: u32,
     map_image_size: u32,
+    tile_dir: String,
+    tile_cache: Arc<Mutex<Vec<(i32, i32, DynamicImage)>>>,
 ) -> Result<DynamicImage> {
+
+    let mut image_store = MapBaseImage::new(&tile_dir, &tile_cache);
+        
     // 必要なタイル数を計算
     let tile_calc = (map_image_size - 1) / tile_size + 1;
 
-    // 取得するタイルの範囲を設定
-    let x_range = Range {
-        start: tile_x - tile_calc as i32,
-        end: tile_x + tile_calc as i32 + 1,
-    };
-
-    let y_range = Range {
-        start: tile_y - tile_calc as i32,
-        end: tile_y + tile_calc as i32 + 1,
-    };
-
-    // タイル画像のダウンロード
-    store_map_tile_range(tile_dir, zoom, &x_range, &y_range).await?;
-
-    // 出力用の画像バッファ作成
-    let mut img = DynamicImage::new_rgba8(
-        (tile_calc * 2 + 1) * tile_size,
-        (tile_calc * 2 + 1) * tile_size,
-    );
-
-    // タイルの合成
-    for (x_pos, tile_x) in x_range.clone().enumerate() {
-        for (y_pos, tile_y) in y_range.clone().enumerate() {
-            let tile_image = image::open(make_tile_filename(tile_dir, zoom, tile_x, tile_y))?;
-            let tile_image = tile_image.to_rgba();
-            imageops::overlay(
-                &mut img,
-                &tile_image,
-                x_pos as u32 * tile_size,
-                y_pos as u32 * tile_size,
-            );
-        }
-    }
+    // 画像が一度生成されているか確認する
+    let mut img = image_store
+        .get_tile_image(map_image_size, tile_size, tile_x, tile_y, zoom)
+        .await?;
 
     // タイルの切り抜き
     let crop_start_x = tile_calc * tile_size + pixel_x as u32 - map_image_size / 2;
@@ -218,58 +229,8 @@ async fn make_map_image(
     );
 
     let img = DynamicImage::ImageRgba8(img);
+
     Ok(img)
-}
-
-async fn store_map_tile_range(
-    target_dir: &str,
-    zoom: u32,
-    tile_x_r: &Range<i32>,
-    tile_y_r: &Range<i32>,
-) -> Result<()> {
-    for tile_x in tile_x_r.clone() {
-        for tile_y in tile_y_r.clone() {
-            store_map_tile(target_dir, zoom, tile_x, tile_y).await?
-        }
-    }
-
-    Ok(())
-}
-
-fn make_tile_filename(target_dir: &str, zoom: u32, tile_x: i32, tile_y: i32) -> PathBuf {
-    let store_file = Path::new(target_dir);
-    let store_file = store_file.join(format!("{}-{}-{}.png", zoom, tile_x, tile_y));
-
-    return store_file;
-}
-
-async fn store_map_tile(target_dir: &str, zoom: u32, tile_x: i32, tile_y: i32) -> Result<()> {
-    // ファイル名生成
-    let store_file = make_tile_filename(target_dir, zoom, tile_x, tile_y);
-
-    // ファイル存在チェック
-    if store_file.exists() {
-        return Ok(());
-    }
-
-    // URL 生成
-    let url = format!("{}{}/{}/{}.png", JAPAN_MAP_URL, zoom, tile_x, tile_y);
-
-    // HTTPでデータ取得
-    let client = reqwest::Client::new();
-    let response = client.get(&url).send().await?;
-
-    // ファイルへ保存
-    let f = File::create(store_file)?;
-    let mut fw = BufWriter::new(f);
-
-    fw.write_all(&response.bytes().await?)?;
-
-    // アクセス終わったら一秒まつ(連続アクセスをしないようにするため)
-    let wait_sec = time::Duration::from_secs(1);
-    thread::sleep(wait_sec);
-
-    Ok(())
 }
 
 fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32, u32) {
@@ -289,6 +250,3 @@ fn calc_tile_and_pixel(lat: f64, lng: f64, zoom: u32) -> (i32, i32, i32, i32, u3
     // 結果をタプルにして返します
     (tile_x, tile_y, pixel_x, pixel_y, t.tile_size())
 }
-
-
-
